@@ -1,0 +1,38 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.tmp
+
+# Local environments and tool caches
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pycache_check/
+
+# Large/generated data artifacts. Rebuild via Makefile targets.
+data/*
+!data/marts/
+data/marts/*
+# 대시보드 배포용 소형 마트·모델만 추적(나머지 대용량 마트·raw·staging은 제외)
+!data/marts/mart_niche_score.parquet
+!data/marts/mart_niche_newcomer.parquet
+!data/marts/q2_aspect_prevalence.parquet
+!data/marts/q2_aspect_severity.parquet
+!data/marts/q2_aspect_trend.parquet
+!data/marts/q2_topics.parquet
+!data/marts/q3_predictions.parquet
+!data/marts/q3_model.pkl
+# 캐시/임시
+data/marts/.matplotlib/
+data/marts/.duckdb_tmp/
+
+# Smoke-test-only generated docs
+docs/q1_niche_scorecard_sample.md
+
+# 차트(docs/figures/*.png)는 README/문서 렌더용으로 커밋하되, 스모크 산출물(_sample)은 제외
+docs/figures/*_sample.png
+
+# 개인 면접 준비 노트 — public repo에 비공개(로컬 보관)
+면접_예상질문.md

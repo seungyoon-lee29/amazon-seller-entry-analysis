@@ -1,0 +1,244 @@
+# ─────────────────────────────────────────────────────────────
+# 프로젝트 설정 — 모든 스크립트가 이 파일만 참조한다 (하드코딩 금지)
+# ─────────────────────────────────────────────────────────────
+
+dataset:
+  repo_id: "McAuley-Lab/Amazon-Reviews-2023"
+  # 재현성을 위해 HuggingFace commit hash로 고정한다.
+  revision: "2b6d039ed471f2ba5fd2acb718bf33b0a7e5598e"
+  # 메인 분석 카테고리 (니치 스코어링의 모집단)
+  main_category: "Home_and_Kitchen"
+  # 교차 등록 ASIN 보완용 (월 셸프류는 Tools에도 등록됨). 메타데이터만 스캔.
+  cross_listing_category: "Tools_and_Home_Improvement"
+
+# 분석 기간 (이전 데이터는 ingestion 단계에서 버림)
+period:
+  start: "2015-01-01"
+  end: "2023-09-30"
+
+# 타깃 니치 키워드 (ASIN universe 구축용 — 제목/카테고리 매칭)
+# 본인 판매 품목: hexagon shelves for wall
+target_niche:
+  name: "wall_shelves"
+  title_keywords:
+    - "hexagon shelf"
+    - "hexagon shelves"
+    - "hexagonal shelf"
+    - "hexagonal shelves"
+    - "honeycomb shelf"
+    - "honeycomb shelves"
+    - "floating shelf"
+    - "floating shelves"
+    - "wall shelf"
+    - "wall shelves"
+    - "wall mounted shelf"
+    - "wall mounted shelves"
+  category_keywords:        # categories 트리 경로에 포함되면 매칭
+    - "Floating Shelves"
+    - "Wall Shelves"
+    - "Wall & Display Shelves"
+  # 오탐 제외 키워드 (제목 단독 매칭에만 적용 — 카테고리 확증은 항상 유지).
+  # "floating shelf bracket" 류는 셸프를 *거는* 하드웨어라 substring 오탐. 검수 D-013.
+  exclude_keywords:
+    - "shelf bracket"
+    - "bracket only"
+
+# 메타데이터에서 보존할 필드 (그 외는 버려서 용량 절감)
+meta_fields:
+  - parent_asin
+  - title
+  - main_category
+  - categories
+  - price
+  - average_rating
+  - rating_number
+  - store
+  - details
+
+# 리뷰에서 보존할 필드
+review_fields_slim:   # 전체 카테고리 집계용 (텍스트 없음)
+  - parent_asin
+  - asin
+  - timestamp
+  - rating
+  - verified_purchase
+  - user_id
+review_fields_full:   # 타깃 니치 ASIN만 (텍스트 포함)
+  - parent_asin
+  - asin
+  - timestamp
+  - rating
+  - verified_purchase
+  - title
+  - text
+  - helpful_vote
+  - user_id
+
+paths:
+  raw: "data/raw"
+  staging: "data/staging"
+  marts: "data/marts"
+
+runtime:
+  chunk_rows: 200000        # parquet 청크 단위
+  seed: 42
+
+# ─────────────────────────────────────────────────────────────
+# Q1 — 니치 기회 스코어링 (src/analyze/niche_score.py)
+# 지표는 모두 "높을수록 진입 매력적"이 되도록 부호 정렬 후 z-표준화 → 가중합.
+# 가중치는 고정값이 아니라 민감도 분석 대상이다(설계서 Stage 3).
+# ─────────────────────────────────────────────────────────────
+q1_scoring:
+  recent_months: 12         # 최근 수요 창
+  prior_months: 12          # 성장률 비교 기준 창 (recent 직전)
+  min_months: 6             # 패널 최소 관측 월 수 (미달 니치 제외)
+  min_active_products: 20   # 최근 창 평균 활성 상품 수 하한 (얇은 니치 제외)
+  weights:                  # 합이 1일 필요는 없음 (z-점수 가중합)
+    demand_growth: 0.35     # 리뷰 증가율 — 수요 모멘텀 (L-1: 절대량 아님, 추세)
+    market_openness: 0.25   # 상위5 집중도의 역 — 진입 여지
+    quality_gap: 0.25       # 저평점(≤2★) 비율 — 품질 개선 진입 기회 (Q2 연결)
+    uncrowded: 0.15         # 신규 진입 강도의 역 — 포화도 낮음
+  sensitivity:
+    n_samples: 500          # 가중치 섭동 횟수
+    dirichlet_alpha: 8      # 클수록 기본 가중치 주변으로 좁게 섭동
+    top_n: 5                # 상위 N 안정성 측정 대상
+
+# ─────────────────────────────────────────────────────────────
+# Q1 보강 — 니치별 "신규 진입자 안착률" (src/analyze/newcomer_winrate.py)
+# "니치마켓이면 시장 크기와 무관하게 그 아이템만 뜨면 된다"는 직관을 정량화한다.
+# Q3의 안착(후기 트랙션) 라벨을 니치 단위로 역집계하되, 니치-상대 P75는 ~25%로
+# 자기정규화돼 비교 불가하므로 *절대 기준*(global floor)을 쓴다. 크기와 거의
+# 무독립(상관 ≈ -0.12)이라 '크기'와 별개의 승산 축으로 해석한다.
+# ─────────────────────────────────────────────────────────────
+q1_newcomer:
+  win_floor: 10             # 출시 90~365일 후기 리뷰 ≥N = "신규가 실질 트랙션 확보(승)"
+  min_launches: 50          # 비율 안정성 위한 니치별 최소 출시 코호트 수
+
+# ─────────────────────────────────────────────────────────────
+# Q2 — 미충족 니즈 텍스트 마이닝 (src/analyze/unmet_needs.py)
+# 저평점 리뷰에서 불만 토픽을 추출한다. 두 트랙으로 교차검증:
+#  (1) aspect 사전 = 셸프 불만의 "조작적 정의"(규칙·투명·감사가능)
+#  (2) NMF 토픽 = 비지도 발굴(사전이 놓친 신호 점검)
+# 임베딩/LLM을 쓰지 않는 이유는 decisions.md D-014 참고("AI 언제 쓰고 안 쓰는지").
+# ─────────────────────────────────────────────────────────────
+q2_unmet_needs:
+  focus_niche: "Floating Shelves"   # 셀러 주력 니치(회고 검증 D-012) — 리포트 1차 대상
+  low_rating_max: 2                 # 저평점 정의(≤N★). 불만 신호 집중
+  high_rating_min: 4                # 고평점 정의(≥N★). lift 계산 분모(불만이 진짜 동인인지)
+  min_text_len: 40                  # 너무 짧은 리뷰 제외(노이즈)
+  compare_niches: 6                 # aspect 유병률 비교용 상위 니치 수(저평점 리뷰 많은 순)
+  nmf_topics: 8                     # 비지도 토픽 수
+  nmf_max_features: 3000            # TF-IDF 어휘 상한
+  examples_per_aspect: 3            # 리포트에 실을 대표 리뷰 수
+  validation_sample: 60             # 수동 정합성 검수용 표본 크기(LLM 출력 맹신 금지의 규칙판)
+  # aspect 사전: 셸프 불만의 알려진 실패 모드. 각 aspect는 시드 구문의 집합으로
+  # "조작적으로 정의"된다. 리뷰 텍스트(소문자)에 구문이 하나라도 있으면 그 aspect로 표시.
+  # 구문은 단어경계로 매칭(부분문자열 오탐 방지). 우선순위 없음(한 리뷰가 복수 aspect 가능).
+  aspects:
+    mounting_hardware:   # 벽 고정·하드웨어 불량
+      - "anchor"
+      - "drywall"
+      - "screw"
+      - "stud"
+      - "mount"
+      - "hardware"
+      - "bracket"
+      - "wall plug"
+    sturdiness_sagging:  # 처짐·흔들림·하중 부족
+      - "sag"
+      - "sagging"
+      - "wobble"
+      - "wobbly"
+      - "bend"
+      - "bent"
+      - "not sturdy"
+      - "flimsy"
+      - "hold weight"
+      - "fell"
+      - "fall down"
+      - "collapse"
+    build_quality:       # 싸구려·약한 재질
+      - "cheap"
+      - "thin"
+      - "broke"
+      - "broken"
+      - "crack"
+      - "cracked"
+      - "fragile"
+      - "poor quality"
+      - "flimsy"
+      - "particle board"
+    finish_cosmetic:     # 마감·외관
+      - "finish"
+      - "paint"
+      - "scratched"
+      - "wrong color"
+      - "stain"
+      - "looks cheap"
+      - "warped"
+      - "uneven"
+    size_fit:            # 크기·치수 기대 불일치 (긍정 리뷰에도 흔한 bare "size"는 제외)
+      - "too small"
+      - "smaller than"
+      - "too short"
+      - "not deep enough"
+      - "too narrow"
+      - "not as big"
+      - "tiny"
+    instructions:        # 설명서·조립
+      - "instruction"
+      - "direction"
+      - "manual"
+      - "assembly"
+      - "hard to install"
+      - "confusing"
+    shipping_damage:     # 배송 중 파손 (전송 손상). bare "missing"은 하드웨어 결품과
+                         # 섞여 오분류되므로 제외 — 결품은 mounting_hardware로 흡수(D-014 검수)
+      - "arrived damaged"
+      - "arrived broken"
+      - "damaged in transit"
+      - "damaged in shipping"
+      - "dented"
+      - "box was damaged"
+      - "broken in the box"
+
+# ─────────────────────────────────────────────────────────────
+# Q3 — 시장 안착 예측 (src/analyze/settlement_model.py)
+# mart_launch(출시 코호트)로 "안착 vs 조기 정체"를 분류한다.
+# 핵심 규율:
+#  - 생존편향(L-2): 모집단은 "리뷰 ≥1 받은 상품" → 타깃은 "성공"이 아니라 "안착 vs 정체"
+#  - 누수 방지(R4/D-015): 라벨을 *초기창 이후*(90~365일) 트랙션으로 정의해, 피처
+#    reviews_90d(첫 90일)와 라벨이 기계적으로 겹치지 않게 한다. 피처는 모두 출시
+#    시점 또는 첫 90일에 알 수 있는 것만(point-in-time).
+#  - 시간 기반 split(랜덤 split 금지): 과거로 학습해 미래 코호트를 예측.
+# ─────────────────────────────────────────────────────────────
+q3_settlement:
+  label:                          # "안착"의 조작적 정의 (D-016: 누수 제거판)
+    later_window_quantile: 0.75   # 니치 내 90~365일 트랙션이 상위 분위(니치 상대) 이상
+    min_floor: 3                  # 니치 임계 하한(얇은 니치에서 0이 되는 것 방지)
+    # 니치 임계는 train 연도만으로 산정해 valid/test에 적용한다(라벨이 미래를 엿보지 않도록).
+    # 평점 게이트(avg_rating_12m)는 피처 avg_rating_90d와 corr≈0.92로 라벨-피처 누수가
+    # 되어 제거했다. 안착 = "지속되는 후기 트랙션 볼륨"으로만 정의. (decisions.md D-016)
+  split:                          # 시간 기반 split 경계(launch_year)
+    train_max_year: 2020
+    valid_year: 2021
+    test_year: 2022
+  features:                       # 모두 point-in-time(출시 시점/첫 90일)
+    - price
+    - reviews_90d
+    - avg_rating_90d
+    - low_share_90d
+    - niche_products_before
+    - niche_reviews_before
+    - niche_avg_rating_before
+  log_features:                   # 우편향 → log1p 변환
+    - reviews_90d
+    - niche_products_before
+    - niche_reviews_before
+  lgbm:
+    n_estimators: 700
+    learning_rate: 0.05
+    num_leaves: 31
+    min_child_samples: 100
+    early_stopping_rounds: 50
+  shap_sample: 20000              # SHAP 계산 표본(속도)

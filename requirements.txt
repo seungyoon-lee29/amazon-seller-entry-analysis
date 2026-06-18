@@ -1,0 +1,15 @@
+huggingface_hub>=0.24   # raw jsonl 직접 스트리밍 (decisions.md D-007)
+pyarrow>=16.0
+duckdb>=1.0
+polars>=1.0
+pandas>=2.0
+numpy>=1.26          # Q1 스코어링: z-표준화·가중치 민감도 섭동
+pyyaml>=6.0
+scikit-learn>=1.3    # Q2 TF-IDF/NMF, Q3 LogReg 베이스라인·지표
+lightgbm>=4.0        # Q3 주모델(결측 native 처리·불균형 가중)
+shap>=0.44           # Q3 피처 기여 해석
+matplotlib>=3.7      # Q3 SHAP·Tier1 차트(make_figures.py)
+streamlit>=1.40      # 니치 진입 의사결정 대시보드(app/dashboard.py)
+plotly>=5.20         # 대시보드 Q3 안착확률 게이지(go.Indicator)
+# Q2는 의도적으로 임베딩/LLM을 쓰지 않는다 — decisions.md D-014
+# (sentence-transformers/hdbscan 불필요).
